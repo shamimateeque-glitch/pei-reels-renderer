@@ -25,15 +25,35 @@ jobs:
       - name: Check job id
         run: |
           [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad job_id"; exit 1; }
+      - name: Cache FFmpeg and fonts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/tools
+            ~/.fonts
+          key: ffmpeg-btbn-gpl-montserrat-v1
       - name: Install FFmpeg, fonts and voice
         timeout-minutes: 6
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            timeout 120 sudo apt-get update -qq -o Acquire::Retries=3 || echo "apt update slow/failed, trying install anyway"
-            timeout 240 sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          mkdir -p ~/tools ~/.fonts
+          if [ ! -x ~/tools/ffmpeg ]; then
+            ( curl -fsSL --retry 3 --max-time 180 -o /tmp/ff.tar.xz \
+                https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+              && tar -xf /tmp/ff.tar.xz -C /tmp && cp /tmp/ffmpeg-*/bin/ffmpeg /tmp/ffmpeg-*/bin/ffprobe ~/tools/ ) \
+            || ( echo "GitHub FFmpeg build unavailable, trying johnvansickle.com" \
+              && curl -fsSL --retry 3 --max-time 180 -o /tmp/ff2.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+              && tar -xf /tmp/ff2.tar.xz -C /tmp && cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe ~/tools/ )
           fi
-          timeout 90 sudo apt-get install -y -qq fonts-montserrat >/dev/null 2>&1 || echo "Montserrat skipped (captions use DejaVu Sans)"
-          ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass " || echo "WARNING: this ffmpeg has no subtitle support"
+          echo "$HOME/tools" >> "$GITHUB_PATH"
+          export PATH="$HOME/tools:$PATH"
+          ffmpeg -hide_banner -version | head -1
+          ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass " && echo "subtitle support OK" || echo "WARNING: this ffmpeg has no subtitle support"
+          for w in ExtraBold Bold; do
+            [ -f ~/.fonts/Montserrat-$w.ttf ] || curl -fsSL --retry 3 --max-time 60 -o ~/.fonts/Montserrat-$w.ttf \
+              https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-$w.ttf || echo "font $w skipped"
+          done
+          fc-cache -f ~/.fonts >/dev/null 2>&1 || true
+          fc-list | grep -ci montserrat || echo "Montserrat not installed; captions will use a default font"
           pip install -q "edge-tts>=7.2.8" "piper-tts==1.3.0"
       - name: Cache offline voice
         uses: actions/cache@v4
