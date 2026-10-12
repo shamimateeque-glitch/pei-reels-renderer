@@ -180,6 +180,7 @@ async def render(job):
         rate = job.get("rate") or "+5%"
         gap = 0.25
         timed, durs, vo_files, clip_files = [], [], [], []
+        clip_cache, clip_offsets = {}, {}
         t0 = 0.0
         for i, sc in enumerate(scenes):
             mp3 = wd / f"vo{i}.mp3"
@@ -188,10 +189,23 @@ async def render(job):
             for k, (s, e, txt) in enumerate(words):
                 timed.append((t0 + s, t0 + e, txt, k == len(words) - 1))
             vo_files.append(mp3); durs.append(d); t0 += d
-            clip = wd / f"clip{i}.mp4"
-            await asyncio.to_thread(download, sc["video_url"], clip)
-            clip_files.append(clip)
+            url = sc["video_url"]
+            if url not in clip_cache:
+                clip = wd / f"clip{len(clip_cache)}.mp4"
+                await asyncio.to_thread(download, url, clip)
+                clip_cache[url] = (clip, probe_duration(clip))
+            clip, clip_len = clip_cache[url]
+            offset = clip_offsets.get(url, 0.0)
+            clip_files.append((clip, offset % clip_len if clip_len > 1 else 0.0))
+            clip_offsets[url] = offset + d   # same clip in a later scene continues from here
         total = sum(durs)
+        # One clip for the whole reel: show the complete clip (Reels max ~90 s) even if narration is shorter.
+        if len(clip_cache) == 1:
+            clip_len = next(iter(clip_cache.values()))[1]
+            want = min(clip_len, float(os.environ.get("MAX_REEL_SECONDS", "88")))
+            if want > total:
+                durs[-1] += want - total
+                total = want
         tail = 0.6
         total_out = total + tail
         durs[-1] += tail
@@ -200,8 +214,8 @@ async def render(job):
         ass.write_text(build_ass(timed, job.get("hook_text", ""), hook_end, job.get("handle", ""), total_out, job.get("accent_color", "#B5452B"), job.get("highlight_color", "#FFD23F")), encoding="utf-8")
 
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-        for c, d in zip(clip_files, durs):
-            cmd += ["-stream_loop", "-1", "-t", f"{d:.3f}", "-i", str(c)]
+        for (c, start), d in zip(clip_files, durs):
+            cmd += ["-stream_loop", "-1", "-ss", f"{start:.3f}", "-t", f"{d:.3f}", "-i", str(c)]
         for v in vo_files:
             cmd += ["-i", str(v)]
         n = len(scenes)
