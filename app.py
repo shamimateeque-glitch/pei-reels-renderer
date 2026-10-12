@@ -39,27 +39,80 @@ def download(url, dest):
         raise RuntimeError(f"Download too small: {url}")
 
 
+PIPER_DIR = Path(os.environ.get("PIPER_DIR", "voices"))
+PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-lessac-medium")
+_piper = None
+
+
+def piper_synthesize(text, path):
+    """Offline fallback voice (Piper). Writes a WAV and estimates word timings per sentence."""
+    global _piper
+    import wave
+    from piper import PiperVoice, SynthesisConfig
+    if _piper is None:
+        _piper = PiperVoice.load(str(PIPER_DIR / f"{PIPER_VOICE}.onnx"))
+    cfg = SynthesisConfig(length_scale=0.95)
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    words, t = [], 0.0
+    gap = 0.18
+    with wave.open(str(path), "wb") as wf:
+        rate = None
+        for si, sent in enumerate(sentences):
+            pcm = b""
+            for chunk in _piper.synthesize(sent, syn_config=cfg):
+                if rate is None:
+                    rate = chunk.sample_rate
+                    wf.setframerate(rate); wf.setsampwidth(2); wf.setnchannels(1)
+                pcm += chunk.audio_int16_bytes
+            if not pcm:
+                continue
+            wf.writeframes(pcm)
+            dur = len(pcm) / 2 / rate
+            ws = sent.split()
+            weights = [len(w) + 2 for w in ws]
+            total = sum(weights) or 1
+            pos = t + 0.05
+            span = max(dur - 0.12, 0.1)
+            for w, wt in zip(ws, weights):
+                d = span * wt / total
+                words.append((pos, pos + d * 0.9, w))
+                pos += d
+            t += dur
+            if si < len(sentences) - 1:
+                wf.writeframes(b"\x00\x00" * int(rate * gap))
+                t += gap
+    if not words:
+        raise RuntimeError("Piper produced no audio")
+    return words
+
+
 async def synthesize(text, voice, rate, path):
-    """Returns list of (start_s, end_s, word). Retries transient network errors."""
+    """Returns (word timings [(start, end, word)], audio_path).
+    Tries Microsoft Edge neural voices first; falls back to the offline Piper voice."""
     last = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             words, audio = [], bytearray()
             comm = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
-            async for ch in comm.stream():
-                if ch["type"] == "audio":
-                    audio += ch["data"]
-                elif ch["type"] == "WordBoundary":
-                    s = ch["offset"] / 1e7
-                    words.append((s, s + ch["duration"] / 1e7, ch["text"]))
-            if not audio:
-                raise RuntimeError("TTS returned no audio")
+            async def collect():
+                async for ch in comm.stream():
+                    if ch["type"] == "audio":
+                        audio.extend(ch["data"])
+                    elif ch["type"] == "WordBoundary":
+                        s = ch["offset"] / 1e7
+                        words.append((s, s + ch["duration"] / 1e7, ch["text"]))
+            await asyncio.wait_for(collect(), 60)
+            if not audio or not words:
+                raise RuntimeError("Edge TTS returned no audio")
             path.write_bytes(bytes(audio))
-            return words
+            return words, path
         except Exception as e:  # noqa
             last = e
-            await asyncio.sleep(2 + attempt * 3)
-    raise RuntimeError(f"TTS failed: {last}")
+            await asyncio.sleep(3)
+    print(f"Edge voice unavailable ({str(last)[:120]}); using offline Piper voice", flush=True)
+    wav = path.with_suffix(".wav")
+    words = await asyncio.to_thread(piper_synthesize, text, wav)
+    return words, wav
 
 
 def ass_color(hex_rgb, alpha="00"):
@@ -130,7 +183,7 @@ async def render(job):
         t0 = 0.0
         for i, sc in enumerate(scenes):
             mp3 = wd / f"vo{i}.mp3"
-            words = await synthesize(sc["voiceover"].strip(), voice, rate, mp3)
+            words, mp3 = await synthesize(sc["voiceover"].strip(), voice, rate, mp3)
             d = probe_duration(mp3) + gap
             for k, (s, e, txt) in enumerate(words):
                 timed.append((t0 + s, t0 + e, txt, k == len(words) - 1))
