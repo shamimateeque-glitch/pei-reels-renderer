@@ -34,7 +34,16 @@ jobs:
           fi
           timeout 90 sudo apt-get install -y -qq fonts-montserrat >/dev/null 2>&1 || echo "Montserrat skipped (captions use DejaVu Sans)"
           ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass " || echo "WARNING: this ffmpeg has no subtitle support"
-          pip install -q "edge-tts==7.2.8"
+          pip install -q "edge-tts>=7.2.8" "piper-tts==1.3.0"
+      - name: Cache offline voice
+        uses: actions/cache@v4
+        with:
+          path: voices
+          key: piper-en_US-lessac-medium-v1
+      - name: Get offline backup voice
+        timeout-minutes: 3
+        run: |
+          [ -f voices/en_US-lessac-medium.onnx ] || python -m piper.download_voices en_US-lessac-medium --data-dir voices || echo "backup voice download failed"
       - name: Render
         timeout-minutes: 8
         env:
