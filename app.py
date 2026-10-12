@@ -242,7 +242,7 @@ async def render(job):
         fl.append(f"[{alast}]afade=t=out:st={total_out-0.6:.3f}:d=0.6,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[aout]")
         out = OUT / f"{rid}.mp4"
         cmd += ["-filter_complex", ";".join(fl), "-map", "[vout]", "-map", "[aout]", "-t", f"{total_out:.3f}",
-                "-c:v", "libx264", "-preset", os.environ.get("X264_PRESET", "veryfast"), "-crf", "21", "-profile:v", "high",
+                "-c:v", "libx264", "-preset", os.environ.get("X264_PRESET", "veryfast"), "-crf", "21", "-maxrate", "4000k", "-bufsize", "8000k", "-profile:v", "high",
                 "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 2),
                 "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-movflags", "+faststart", str(out)]
         await asyncio.to_thread(run, cmd)
