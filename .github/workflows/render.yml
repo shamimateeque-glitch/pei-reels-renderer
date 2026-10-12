@@ -26,12 +26,17 @@ jobs:
         run: |
           [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad job_id"; exit 1; }
       - name: Install FFmpeg, fonts and voice
+        timeout-minutes: 6
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core fontconfig >/dev/null
-          sudo apt-get install -y -qq fonts-montserrat >/dev/null || true
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            timeout 120 sudo apt-get update -qq -o Acquire::Retries=3 || echo "apt update slow/failed, trying install anyway"
+            timeout 240 sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          fi
+          timeout 90 sudo apt-get install -y -qq fonts-montserrat >/dev/null 2>&1 || echo "Montserrat skipped (captions use DejaVu Sans)"
+          ffmpeg -hide_banner -filters 2>/dev/null | grep -q " ass " || echo "WARNING: this ffmpeg has no subtitle support"
           pip install -q "edge-tts==7.2.8"
       - name: Render
+        timeout-minutes: 8
         env:
           JOB_JSON: ${{ inputs.job }}
         run: python render_cli.py
@@ -40,7 +45,7 @@ jobs:
           gh release view reels >/dev/null 2>&1 || gh release create reels --title "Rendered reels" --notes "Videos made by n8n. Old ones are removed automatically."
           gh release upload reels "$JOB_ID.mp4" --clobber
       - name: Report failure to n8n
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "Render failed. Open this run in GitHub Actions to see the log." > "$JOB_ID.error.txt"
           gh release view reels >/dev/null 2>&1 || gh release create reels --title "Rendered reels" --notes "auto"
