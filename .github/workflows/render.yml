@@ -1,0 +1,52 @@
+name: Render reel
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Unique id for this reel (set by n8n)
+        required: true
+      job:
+        description: Render job JSON (set by n8n)
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: render
+  cancel-in-progress: false
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JOB_ID: ${{ inputs.job_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check job id
+        run: |
+          [[ "$JOB_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad job_id"; exit 1; }
+      - name: Install FFmpeg, fonts and voice
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core fontconfig >/dev/null
+          sudo apt-get install -y -qq fonts-montserrat >/dev/null || true
+          pip install -q "edge-tts==7.2.8"
+      - name: Render
+        env:
+          JOB_JSON: ${{ inputs.job }}
+        run: python render_cli.py
+      - name: Upload video
+        run: |
+          gh release view reels >/dev/null 2>&1 || gh release create reels --title "Rendered reels" --notes "Videos made by n8n. Old ones are removed automatically."
+          gh release upload reels "$JOB_ID.mp4" --clobber
+      - name: Report failure to n8n
+        if: failure()
+        run: |
+          echo "Render failed. Open this run in GitHub Actions to see the log." > "$JOB_ID.error.txt"
+          gh release view reels >/dev/null 2>&1 || gh release create reels --title "Rendered reels" --notes "auto"
+          gh release upload reels "$JOB_ID.error.txt" --clobber
+      - name: Delete videos older than 3 days
+        if: always()
+        run: |
+          gh release view reels --json assets --jq '.assets[] | select((.createdAt | fromdateiso8601) < (now - 259200)) | .name' 2>/dev/null \
+            | while read -r name; do gh release delete-asset reels "$name" -y; done || true
